@@ -1,12 +1,14 @@
 {
-  "name": "@mathieuc/tradingview",
-  "version": "3.5.1",
-  "description": "Tradingview instant stocks API, indicator alerts, trading bot, and more !",
+  "name": "tradingview-api",
+  "version": "1.0.0",
+  "description": "TradingView API with data socket server",
   "main": "main.js",
   "scripts": {
     "test": "vitest",
     "example": "node --env-file=.env",
-    "example:dev": "nodemon --env-file=.env"
+    "example:dev": "nodemon --env-file=.env",
+    "start-socket-server": "node examples/DataSocketServer.js",
+    "test-socket-client": "node examples/SocketClient.js"
   },
   "repository": {
     "type": "git",
@@ -30,7 +32,10 @@
   "dependencies": {
     "axios": "^1.5.0",
     "jszip": "^3.7.1",
-    "ws": "^7.4.3"
+    "ws": "^7.4.3",
+    "express": "^4.17.1",
+    "socket.io": "^4.5.0",
+    "socket.io-client": "^4.5.0"
   },
   "devDependencies": {
     "@babel/eslint-parser": "^7.15.7",
