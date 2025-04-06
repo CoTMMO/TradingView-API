@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //| QuoteMarket class for MQL5                                       |
 //+------------------------------------------------------------------+
-
+#include  "session.mqh"
 // Event type enumeration
 enum ENUM_MARKET_EVENT {
    MARKET_EVENT_LOADED,
@@ -178,17 +178,44 @@ void QuoteMarket::ProcessPacket(string packetType, string &packetData) {
       
    // Process different packet types
    if(packetType == "qsd") {
-      // Handle quote data
-      // In a real implementation, you'd parse the JSON data
-      m_lastData = packetData;
-      HandleEvent(MARKET_EVENT_DATA, m_lastData);
+      // Parse JSON data
+      CJAVal json;
+      if(!json.Deserialize(packetData)) {
+         HandleError("Failed to parse market data JSON");
+         return;
+      }
+      
+      // Check if packet has valid data structure
+      if(json.Size() >= 2 && json[1].HasKey("s") && json[1]["s"].ToStr() == "ok") {
+         if(json[1].HasKey("v")) {
+            CJAVal values = json[1]["v"];
+            
+            // Extract and store market data from the values object
+            if(values.HasKey("lp")) {
+               double price = values["lp"].ToDbl();
+               // Store price in m_lastData or process it
+               // ...
+            }
+            
+            // Similar processing for other fields...
+            
+            // Notify data listeners
+            string data = packetData;
+            HandleEvent(MARKET_EVENT_DATA, data);
+         }
+      }
+      else if(json.Size() >= 2 && json[1].HasKey("s") && json[1]["s"].ToStr() == "error") {
+         // Handle error
+         string errorMsg = "Market error";
+         if(json[1].HasKey("errmsg")) {
+            errorMsg = json[1]["errmsg"].ToStr();
+         }
+         HandleError(errorMsg);
+      }
    }
    else if(packetType == "quote_completed") {
       string dummy;
       HandleEvent(MARKET_EVENT_LOADED, dummy);
-   }
-   else if(packetType == "error") {
-      HandleError(packetData);
    }
 }
 

@@ -1,139 +1,146 @@
 //+------------------------------------------------------------------+
 //| TradingView API Protocol functions for MQL5                       |
 //+------------------------------------------------------------------+
-#include <Web\Json.mqh>
-
-// Missing helper functions for packet handling
+#include "./include/JAson.mqh"
 
 //+------------------------------------------------------------------+
-//| Convert CJAVal to packet string                                  |
-//| @param CJAVal json - The JSON object to convert                   |
-//| @return string - JSON string for WebSocket packet                 |
+//| Protocol helper class for websocket packet handling              |
 //+------------------------------------------------------------------+
-string JSONToPacket(CJAVal &json) {
-   return json.Serialize();
-}
+class Protocol {
+private:
+   static string      m_cleanerRgx;    // ~h~
+   static string      m_splitterRgx;   // ~m~[0-9]{1,}~m~
 
-//+------------------------------------------------------------------+
-//| Parse JSON string to CJAVal                                      |
-//| @param string str - JSON string                                   |
-//| @param CJAVal &json - Output JSON object                          |
-//| @return bool - Success or failure                                 |
-//+------------------------------------------------------------------+
-bool PacketToJSON(string str, CJAVal &json) {
-   return json.Deserialize(str);
-}
+public:
+   // Parse websocket packet
+   static bool        ParseWSPacket(string data, CJAVal &packets[]);
+   
+   // Format websocket packet
+   static string      FormatWSPacket(CJAVal &packet);
+   static string      FormatWSPacket(string text);
+   
+   // Parse compressed data
+   static bool        ParseCompressed(string data, CJAVal &result);
+   
+   // Helper methods
+   static string      CleanPacket(string data);
+   static bool        SplitPackets(string data, string &parts[]);
+   static bool        ParseJSON(string data, CJAVal &json);
+};
 
 //+------------------------------------------------------------------+
 //| Parse websocket packet                                           |
-//| @param string str - Websocket raw data                           |
-//| @return string[] - Array of parsed packets                       |
 //+------------------------------------------------------------------+
-string[] ParseWSPacket(string str)
-{
-   string result[];
+bool Protocol::ParseWSPacket(string data, CJAVal &packets[]) {
+   // Clean the packet
+   string cleaned = CleanPacket(data);
    
-   // Clean the string by removing "~h~"
-   str = StringReplace(str, "~h~", "");
+   // Split into parts
+   string parts[];
+   if(!SplitPackets(cleaned, parts))
+      return false;
+      
+   // Parse each part
+   int count = ArraySize(parts);
+   ArrayResize(packets, count);
    
-   // Split by the pattern ~m~NN~m~
+   for(int i=0; i<count; i++) {
+      if(parts[i] == "") continue;
+      
+      // Try to parse as JSON
+      if(!ParseJSON(parts[i], packets[i])) {
+         Print("Warning: Cannot parse packet: ", parts[i]);
+         continue;
+      }
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Format websocket packet                                          |
+//+------------------------------------------------------------------+
+string Protocol::FormatWSPacket(CJAVal &packet) {
+   string msg = packet.Serialize();
+   return "~m~" + IntegerToString(StringLen(msg)) + "~m~" + msg;
+}
+
+//+------------------------------------------------------------------+
+//| Format websocket text packet                                     |
+//+------------------------------------------------------------------+
+string Protocol::FormatWSPacket(string text) {
+   return "~m~" + IntegerToString(StringLen(text)) + "~m~" + text;
+}
+
+//+------------------------------------------------------------------+
+//| Parse compressed data                                            |
+//+------------------------------------------------------------------+
+bool Protocol::ParseCompressed(string data, CJAVal &result) {
+   // Note: This would require external ZIP implementation
+   Print("Warning: ParseCompressed requires external ZIP implementation");
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Clean packet data                                                |
+//+------------------------------------------------------------------+
+string Protocol::CleanPacket(string data) {
+   return StringReplace(data, "~h~", "");
+}
+
+//+------------------------------------------------------------------+
+//| Split packet into parts                                          |
+//+------------------------------------------------------------------+
+bool Protocol::SplitPackets(string data, string &parts[]) {
    int pos = 0;
    int startPos = 0;
-   int length = StringLen(str);
+   int length = StringLen(data);
    string pattern = "~m~";
    int patternLen = StringLen(pattern);
    
-   while(pos < length)
-   {
+   while(pos < length) {
       // Find first ~m~
-      pos = StringFind(str, pattern, pos);
+      pos = StringFind(data, pattern, pos);
       if(pos == -1) break;
       
       pos += patternLen;
       
       // Find the number after first ~m~
       string numStr = "";
-      while(pos < length && StringGetCharacter(str, pos) >= '0' && StringGetCharacter(str, pos) <= '9')
-      {
-         numStr += ShortToString(StringGetCharacter(str, pos));
+      while(pos < length && StringGetCharacter(data, pos) >= '0' && StringGetCharacter(data, pos) <= '9') {
+         numStr += ShortToString(StringGetCharacter(data, pos));
          pos++;
       }
       
       // Skip second ~m~
-      pos = StringFind(str, pattern, pos);
+      pos = StringFind(data, pattern, pos);
       if(pos == -1) break;
       
       pos += patternLen;
       
       // Extract the packet
       int msgLen = (int)StringToInteger(numStr);
-      if(pos + msgLen <= length)
-      {
-         string packet = StringSubstr(str, pos, msgLen);
+      if(pos + msgLen <= length) {
+         string packet = StringSubstr(data, pos, msgLen);
          
-         // Try to parse JSON (in a real implementation, you'd need a JSON parser)
-         if(packet != "")
-         {
-            int size = ArraySize(result);
-            ArrayResize(result, size + 1);
-            result[size] = packet;
-         }
+         int size = ArraySize(parts);
+         ArrayResize(parts, size + 1);
+         parts[size] = packet;
          
          pos += msgLen;
       }
-      else
-      {
-         // Malformed packet, skip
+      else {
+         // Malformed packet
          pos = length;
       }
    }
    
-   return result;
+   return true;
 }
 
 //+------------------------------------------------------------------+
-//| Format websocket packet                                          |
-//| @param string packet - The packet to format                      |
-//| @return string - Formatted websocket data                        |
+//| Parse JSON string                                                |
 //+------------------------------------------------------------------+
-string FormatWSPacket(string packet)
-{
-   int length = StringLen(packet);
-   return "~m~" + IntegerToString(length) + "~m~" + packet;
-}
-
-//+------------------------------------------------------------------+
-//| JSON utility functions - basic implementation                    |
-//+------------------------------------------------------------------+
-// Note: MQL5 does not have native JSON parsing. 
-// These are simplified helpers - for complex JSON, use a library
-
-bool IsJSONObject(string str)
-{
-   str = StringTrimLeft(StringTrimRight(str));
-   return StringLen(str) >= 2 && StringGetCharacter(str, 0) == '{' && 
-          StringGetCharacter(str, StringLen(str) - 1) == '}';
-}
-
-bool IsJSONArray(string str)
-{
-   str = StringTrimLeft(StringTrimRight(str));
-   return StringLen(str) >= 2 && StringGetCharacter(str, 0) == '[' && 
-          StringGetCharacter(str, StringLen(str) - 1) == ']';
-}
-
-//+------------------------------------------------------------------+
-//| Parse compressed data - LIMITED FUNCTIONALITY                    |
-//| @param string data - Base64 encoded compressed data              |
-//| @return string - Warning about limitations                       |
-//+------------------------------------------------------------------+
-string ParseCompressed(string data)
-{
-   // MQL5 does not have built-in ZIP functionality
-   // To implement this, you would need:
-   // 1. Base64 decode function
-   // 2. ZIP decompression (possibly via external DLL)
-   
-   Print("WARNING: ParseCompressed function requires external ZIP implementation");
-   return "ZIP functionality requires external implementation";
+bool Protocol::ParseJSON(string data, CJAVal &json) {
+   return json.Deserialize(data);
 }

@@ -2,7 +2,7 @@
 //| QuoteSession class for MQL5                                      |
 //+------------------------------------------------------------------+
 
-#include <Web\Json.mqh>
+#include "../include/JAson.mqh"
 #include "market.mqh"
 
 // Field type enumeration for quote data fields
@@ -81,336 +81,232 @@ struct CallbackEntry {
 //+------------------------------------------------------------------+
 //| QuoteSession class definition                                    |
 //+------------------------------------------------------------------+
-class QuoteSession {
+class QuoteSession : public Session {
 private:
    string            m_sessionID;
    SymbolListener    m_symbolListeners[];
-   
-   // Map of market instances for each symbol
    QuoteMarket*      m_marketInstances[];
    
-   // Generate a unique session ID
-   string            GenerateSessionID();
+   // Quote fields
+   string            m_fields[];
    
-   // Get quote fields based on type
-   void              GetQuoteFields(string fieldsType, string &fields[]);
+   // Session options
+   struct QuoteSessionOptions {
+      string         fieldsType;      // 'all' or 'price'
+      string         customFields[];  // Custom fields if specified
+   } m_options;
    
-   // Parse symbol key to extract symbol and session
-   bool              ParseSymbolKey(string symbolKey, string &symbol, string &session);
+   // Private methods
+   void              InitializeFields();
+   bool              AddSymbolListener(string symbolKey);
+   bool              RemoveSymbolListener(string symbolKey);
+   void              CleanupMarkets();
 
 public:
-                     QuoteSession(string fieldsType="all");
+                     QuoteSession(QuoteSessionOptions &options);
                     ~QuoteSession();
    
-   // Market class factory
+   // Implement OnData method from Session base class
+   virtual void      OnData(string packetType, CJAVal &data);
+   
+   // Market management
    QuoteMarket*      CreateMarket(string symbol, string session="regular");
-   
-   // Add symbol to the session
    bool              AddSymbol(string symbol, string session="regular");
-   
-   // Remove symbol from the session
    bool              RemoveSymbol(string symbol, string session="regular");
    
-   // Process incoming packet
-   void              ProcessPacket(string packetType, string &packetData);
-   
-   // Delete the session
+   // Session management
    void              Delete();
    
    // Getters
-   string            GetSessionID() { return m_sessionID; }
-
-   // Register a symbol listener callback
-   bool              RegisterSymbolCallback(string symbol, string session, int callbackFunc);
+   string            GetSessionID() const { return m_sessionID; }
 };
 
 //+------------------------------------------------------------------+
-//| Helper function to get quote fields based on type                 |
+//| Constructor                                                       |
 //+------------------------------------------------------------------+
-void QuoteSession::GetQuoteFields(string fieldsType, string &fields[]) {
-   if(fieldsType == "price") {
-      ArrayResize(fields, 1);
-      fields[0] = "lp";
-      return;
+QuoteSession::QuoteSession(QuoteSessionOptions &options) {
+   m_sessionID = genSessionID("qs");
+   m_options = options;
+   
+   // Initialize fields based on options
+   InitializeFields();
+   
+   // Send session creation messages
+   CJAVal createParams;
+   createParams.Add(m_sessionID);
+   Client::Send("quote_create_session", createParams);
+   
+   // Set fields
+   CJAVal setFieldsParams;
+   setFieldsParams.Add(m_sessionID);
+   for(int i=0; i<ArraySize(m_fields); i++) {
+      setFieldsParams.Add(m_fields[i]);
    }
-   
-   // All fields
-   string allFields[] = {
-      "base-currency-logoid", "ch", "chp", "currency-logoid",
-      "currency_code", "current_session", "description",
-      "exchange", "format", "fractional", "is_tradable",
-      "language", "local_description", "logoid", "lp",
-      "lp_time", "minmov", "minmove2", "original_name",
-      "pricescale", "pro_name", "short_name", "type",
-      "update_mode", "volume", "ask", "bid", "fundamentals",
-      "high_price", "low_price", "open_price", "prev_close_price",
-      "rch", "rchp", "rtc", "rtc_time", "status", "industry",
-      "basic_eps_net_income", "beta_1_year", "market_cap_basic",
-      "earnings_per_share_basic_ttm", "price_earnings_ttm",
-      "sector", "dividends_yield", "timezone", "country_code",
-      "provider_id"
-   };
-   
-   int size = ArraySize(allFields);
-   ArrayResize(fields, size);
-   for(int i=0; i<size; i++)
-      fields[i] = allFields[i];
+   Client::Send("quote_set_fields", setFieldsParams);
 }
 
 //+------------------------------------------------------------------+
-//| Generate a unique session ID                                      |
+//| Initialize quote fields based on options                          |
 //+------------------------------------------------------------------+
-string QuoteSession::GenerateSessionID() {
-   string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-   string id = "qs_";
-   
-   for(int i=0; i<8; i++)
-      id += StringSubstr(chars, MathRand() % StringLen(chars), 1);
+void QuoteSession::InitializeFields() {
+   if(ArraySize(m_options.customFields) > 0) {
+      // Use custom fields
+      ArrayCopy(m_fields, m_options.customFields);
+   }
+   else {
+      // Use predefined fields based on type
+      if(m_options.fieldsType == "price") {
+         ArrayResize(m_fields, 1);
+         m_fields[0] = "lp";
+      }
+      else {
+         // All fields
+         string allFields[] = {
+            "base-currency-logoid", "ch", "chp", "currency-logoid",
+            "currency_code", "current_session", "description",
+            "exchange", "format", "fractional", "is_tradable",
+            "language", "local_description", "logoid", "lp",
+            "lp_time", "minmov", "minmove2", "original_name",
+            "pricescale", "pro_name", "short_name", "type",
+            "update_mode", "volume", "ask", "bid", "fundamentals",
+            "high_price", "low_price", "open_price", "prev_close_price",
+            "rch", "rchp", "rtc", "rtc_time", "status", "industry",
+            "basic_eps_net_income", "beta_1_year", "market_cap_basic",
+            "earnings_per_share_basic_ttm", "price_earnings_ttm",
+            "sector", "dividends_yield", "timezone", "country_code",
+            "provider_id"
+         };
+         
+         ArrayCopy(m_fields, allFields);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Process incoming data                                             |
+//+------------------------------------------------------------------+
+void QuoteSession::OnData(string packetType, CJAVal &data) {
+   if(packetType == "quote_completed") {
+      string symbolKey = data[1].ToStr();
       
-   return id;
-}
-
-//+------------------------------------------------------------------+
-//| Parse symbol key into components                                  |
-//+------------------------------------------------------------------+
-bool QuoteSession::ParseSymbolKey(string symbolKey, string &symbol, string &session) {
-   // symbolKey format: ={\"session\":\"regular\",\"symbol\":\"BTCUSD\"}
-   
-   int sessionPos = StringFind(symbolKey, "session");
-   int symbolPos = StringFind(symbolKey, "symbol");
-   
-   if(sessionPos <= 0 || symbolPos <= 0)
-      return false;
+      // Find and notify listeners
+      for(int i=0; i<ArraySize(m_symbolListeners); i++) {
+         if(m_symbolListeners[i].symbolKey == symbolKey) {
+            if(m_marketInstances[i] != NULL) {
+               m_marketInstances[i].ProcessPacket(packetType, data);
+            }
+         }
+      }
+   }
+   else if(packetType == "qsd") {
+      string symbolKey = data[1]["n"].ToStr();
       
-   // Extract session
-   int sessionStart = StringFind(symbolKey, "\"", sessionPos + 8) + 1;
-   int sessionEnd = StringFind(symbolKey, "\"", sessionStart);
-   if(sessionStart <= 0 || sessionEnd <= 0)
-      return false;
-      
-   session = StringSubstr(symbolKey, sessionStart, sessionEnd - sessionStart);
-   
-   // Extract symbol
-   int symbolStart = StringFind(symbolKey, "\"", symbolPos + 7) + 1;
-   int symbolEnd = StringFind(symbolKey, "\"", symbolStart);
-   if(symbolStart <= 0 || symbolEnd <= 0)
-      return false;
-      
-   symbol = StringSubstr(symbolKey, symbolStart, symbolEnd - symbolStart);
-   
-   return true;
+      // Find and notify listeners
+      for(int i=0; i<ArraySize(m_symbolListeners); i++) {
+         if(m_symbolListeners[i].symbolKey == symbolKey) {
+            if(m_marketInstances[i] != NULL) {
+               m_marketInstances[i].ProcessPacket(packetType, data);
+            }
+         }
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
-//| QuoteSession Constructor                                          |
-//+------------------------------------------------------------------+
-QuoteSession::QuoteSession(string fieldsType="all") {
-   m_sessionID = GenerateSessionID();
-   
-   string fields[];
-   GetQuoteFields(fieldsType, fields);
-   
-   // In a real implementation, this would send messages to the TradingView API
-   // For now, we'll just log what would happen
-   Print("Creating quote session: ", m_sessionID);
-   Print("Setting fields: ", ArraySize(fields), " fields");
-}
-
-//+------------------------------------------------------------------+
-//| QuoteSession Destructor                                           |
-//+------------------------------------------------------------------+
-QuoteSession::~QuoteSession() {
-   Delete();
-}
-
-//+------------------------------------------------------------------+
-//| Create a new market instance                                      |
+//| Create market instance                                            |
 //+------------------------------------------------------------------+
 QuoteMarket* QuoteSession::CreateMarket(string symbol, string session="regular") {
-   // Create the market instance
-   QuoteMarket* market = new QuoteMarket(this, symbol, session);
-   
-   // Generate the symbol key
    string symbolKey = "={\"session\":\"" + session + "\",\"symbol\":\"" + symbol + "\"}";
    
-   // Find an existing or add a new entry in the listeners array
-   int listenerIndex = -1;
+   // Add symbol listener if needed
+   if(AddSymbolListener(symbolKey)) {
+      int index = ArraySize(m_symbolListeners) - 1;
+      m_marketInstances[index] = new QuoteMarket(this, symbol, session);
+      return m_marketInstances[index];
+   }
    
+   return NULL;
+}
+
+//+------------------------------------------------------------------+
+//| Add symbol listener                                               |
+//+------------------------------------------------------------------+
+bool QuoteSession::AddSymbolListener(string symbolKey) {
+   // Check if already exists
    for(int i=0; i<ArraySize(m_symbolListeners); i++) {
       if(m_symbolListeners[i].symbolKey == symbolKey) {
-         listenerIndex = i;
-         break;
+         return false;
       }
    }
    
-   if(listenerIndex == -1) {
-      // Add new listener
-      int size = ArraySize(m_symbolListeners);
-      ArrayResize(m_symbolListeners, size + 1);
-      ArrayResize(m_marketInstances, size + 1);
-      
-      m_symbolListeners[size].symbolKey = symbolKey;
-      m_symbolListeners[size].id = size;
-      m_symbolListeners[size].active = true;
-      
-      m_marketInstances[size] = market;
-   }
-   else {
-      // Update existing listener
-      m_symbolListeners[listenerIndex].active = true;
-      m_marketInstances[listenerIndex] = market;
-   }
-   
-   return market;
-}
-
-//+------------------------------------------------------------------+
-//| Add a symbol to the session                                       |
-//+------------------------------------------------------------------+
-bool QuoteSession::AddSymbol(string symbol, string session="regular") {
-   string symbolKey = "={\"session\":\"" + session + "\",\"symbol\":\"" + symbol + "\"}";
-   
-   // Check if symbol already exists
-   for(int i=0; i<ArraySize(m_symbolListeners); i++) {
-      if(m_symbolListeners[i].symbolKey == symbolKey && m_symbolListeners[i].active)
-         return true; // Already added
-   }
-   
-   // Add new symbol listener
+   // Add new listener
    int size = ArraySize(m_symbolListeners);
    ArrayResize(m_symbolListeners, size + 1);
+   ArrayResize(m_marketInstances, size + 1);
+   
    m_symbolListeners[size].symbolKey = symbolKey;
    m_symbolListeners[size].id = size;
    m_symbolListeners[size].active = true;
    
-   // In a real implementation, send a message to the TradingView API
-   Print("Adding symbol to session: ", symbolKey);
+   // Send add symbol message
+   CJAVal params;
+   params.Add(m_sessionID);
+   params.Add(symbolKey);
+   Client::Send("quote_add_symbols", params);
    
    return true;
 }
 
 //+------------------------------------------------------------------+
-//| Remove a symbol from the session                                  |
+//| Remove symbol listener                                            |
 //+------------------------------------------------------------------+
-bool QuoteSession::RemoveSymbol(string symbol, string session="regular") {
-   string symbolKey = "={\"session\":\"" + session + "\",\"symbol\":\"" + symbol + "\"}";
-   
+bool QuoteSession::RemoveSymbolListener(string symbolKey) {
    for(int i=0; i<ArraySize(m_symbolListeners); i++) {
-      if(m_symbolListeners[i].symbolKey == symbolKey && m_symbolListeners[i].active) {
-         m_symbolListeners[i].active = false;
+      if(m_symbolListeners[i].symbolKey == symbolKey) {
+         // Send remove symbol message
+         CJAVal params;
+         params.Add(m_sessionID);
+         params.Add(symbolKey);
+         Client::Send("quote_remove_symbols", params);
          
-         // In a real implementation, send a message to the TradingView API
-         Print("Removing symbol from session: ", symbolKey);
+         // Cleanup market instance
+         if(m_marketInstances[i] != NULL) {
+            delete m_marketInstances[i];
+            m_marketInstances[i] = NULL;
+         }
+         
+         m_symbolListeners[i].active = false;
          return true;
       }
    }
    
-   return false; // Symbol not found
+   return false;
 }
 
 //+------------------------------------------------------------------+
-//| Process an incoming packet                                        |
-//+------------------------------------------------------------------+
-void QuoteSession::ProcessPacket(string packetType, string &packetData) {
-   // Debug output
-   if(MQLInfoInteger(MQL_DEBUG))
-      Print("QUOTE SESSION DATA: ", packetType, " - ", packetData);
-   
-   // Parse JSON data
-   CJAVal json;
-   if(!json.Deserialize(packetData)) {
-      Print("Error: Failed to parse packet data as JSON");
-      return;
-   }
-   
-   string symbolKey = "";
-   
-   // Extract the symbol key based on packet type
-   if(packetType == "quote_completed") {
-      // For quote_completed packets, symbol key is in the second element
-      // Format in JS: packet.data[1]
-      if(json.Size() >= 2) {
-         symbolKey = json[1].ToStr();
-      }
-   }
-   else if(packetType == "qsd") {
-      // For qsd packets, symbol key is in data[1].n
-      // Format in JS: packet.data[1].n
-      if(json.Size() >= 2 && json[1].HasKey("n")) {
-         symbolKey = json[1]["n"].ToStr();
-      }
-   }
-   
-   // Skip processing if we couldn't identify the symbol
-   if(symbolKey == "") {
-      Print("Warning: Could not extract symbol key from packet");
-      return;
-   }
-   
-   // Find matching symbol listeners
-   bool foundListener = false;
-   
-   for(int i = 0; i < ArraySize(m_symbolListeners); i++) {
-      if(m_symbolListeners[i].symbolKey == symbolKey && m_symbolListeners[i].active) {
-         foundListener = true;
-         
-         // Forward this to the associated market instance
-         if(i < ArraySize(m_marketInstances) && m_marketInstances[i] != NULL) {
-            m_marketInstances[i].ProcessPacket(packetType, packetData);
-         }
-      }
-   }
-   
-   // If no active listener was found, remove the symbol from the session
-   if(!foundListener) {
-      Print("No active listener found for symbol: ", symbolKey, " - removing from session");
-      
-      // Extract the actual symbol and session from the symbolKey
-      string symbolStr = "";
-      string sessionStr = "regular";
-      
-      if(ParseSymbolKey(symbolKey, symbolStr, sessionStr)) {
-         // Remove the symbol
-         Print("Removing symbol from session: ", symbolStr, " (", sessionStr, ")");
-         // In a real implementation, you would send a message to TradingView API
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Delete the session                                                |
+//| Delete session                                                    |
 //+------------------------------------------------------------------+
 void QuoteSession::Delete() {
-   // In a real implementation, this would send a message to delete the session
-   Print("Deleting quote session: ", m_sessionID);
+   // Send delete session message
+   CJAVal params;
+   params.Add(m_sessionID);
+   Client::Send("quote_delete_session", params);
    
-   // Clean up symbol listeners
-   ArrayFree(m_symbolListeners);
-   
-   // Clean up market instances
-   for(int i = 0; i < ArraySize(m_marketInstances); i++) {
+   // Cleanup markets
+   CleanupMarkets();
+}
+
+//+------------------------------------------------------------------+
+//| Cleanup market instances                                          |
+//+------------------------------------------------------------------+
+void QuoteSession::CleanupMarkets() {
+   for(int i=0; i<ArraySize(m_marketInstances); i++) {
       if(m_marketInstances[i] != NULL) {
          delete m_marketInstances[i];
          m_marketInstances[i] = NULL;
       }
    }
+   
    ArrayFree(m_marketInstances);
-}
-
-//+------------------------------------------------------------------+
-//| Register a symbol listener callback                               |
-//+------------------------------------------------------------------+
-bool QuoteSession::RegisterSymbolCallback(string symbol, string session, int callbackFunc) {
-   string symbolKey = "={\"session\":\"" + session + "\",\"symbol\":\"" + symbol + "\"}";
-   
-   // Create callback entry
-   int size = ArraySize(m_symbolListeners);
-   ArrayResize(m_symbolListeners, size + 1);
-   m_symbolListeners[size].symbolKey = symbolKey;
-   m_symbolListeners[size].id = size;
-   m_symbolListeners[size].active = true;
-   
-   // In a complete implementation, we would store the callback function pointer
-   
-   return true;
+   ArrayFree(m_symbolListeners);
 }

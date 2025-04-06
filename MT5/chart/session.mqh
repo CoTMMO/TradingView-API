@@ -115,7 +115,7 @@ typedef void (*ReplayEndCallback)();
 typedef void (*ErrorCallback)(string);
 
 // ChartSession class
-class ChartSession {
+class ChartSession : public Session {
 private:
    // Session IDs
    string chartSessionID;       // Chart session ID
@@ -154,6 +154,9 @@ public:
    // Constructor and destructor
    ChartSession(ClientBridge* clientBridge);
    ~ChartSession();
+   
+   // Implement OnData method from Session base class
+   virtual void OnData(string packetType, CJAVal &data);
    
    // Chart management methods
    void SetSeries(string timeframe = "240", int range = 100, datetime reference = 0);
@@ -206,6 +209,10 @@ ChartSession::ChartSession(ClientBridge* clientBridge) {
    currentSeries = 0;
    seriesCreated = false;
    
+   // Set base class properties
+   type = "chart";
+   sessionId = chartSessionID;
+   
    // Initialize callback arrays
    symbolLoadedCallbacks = new CArrayObj();
    updateCallbacks = new CArrayObj();
@@ -234,6 +241,83 @@ ChartSession::~ChartSession() {
    delete replayResolutionCallbacks;
    delete replayEndCallbacks;
    delete errorCallbacks;
+}
+
+//+------------------------------------------------------------------+
+//| Process an incoming packet from the client                        |
+//+------------------------------------------------------------------+
+void ChartSession::OnData(string packetType, CJAVal &data) {
+   // Debug output
+   if(MQLInfoInteger(MQL_DEBUG))
+      Print("CHART SESSION DATA: ", packetType);
+      
+   if(packetType == "symbol_resolved") {
+      // Update market infos
+      infos.seriesId = data[1].ToStr();
+      // Extract other info fields from data[2]
+      // ...implementation...
+      
+      // Trigger symbol loaded event
+      string dummy[];
+      HandleEvent("symbolLoaded", dummy);
+      return;
+   }
+   
+   if(packetType == "timescale_update" || packetType == "du") {
+      // Process update data
+      string changes[];
+      
+      if(data[1].HasKey("$prices")) {
+         CJAVal prices = data[1]["$prices"];
+         if(prices.HasKey("s")) {
+            CJAVal series = prices["s"];
+            for(int i=0; i<series.Size(); i++) {
+               CJAVal point = series[i];
+               if(point.HasKey("v") && point["v"].Size() >= 6) {
+                  int timestamp = (int)point["v"][0].ToDbl();
+                  
+                  // Create a new period entry
+                  int size = ArraySize(periods);
+                  ArrayResize(periods, size + 1);
+                  
+                  periods[size].time = (datetime)timestamp;
+                  periods[size].open = point["v"][1].ToDbl();
+                  periods[size].high = point["v"][2].ToDbl();
+                  periods[size].low = point["v"][3].ToDbl();
+                  periods[size].close = point["v"][4].ToDbl();
+                  periods[size].volume = point["v"][5].ToDbl();
+               }
+            }
+         }
+         
+         // Add "$prices" to the changed fields
+         ArrayResize(changes, 1);
+         changes[0] = "$prices";
+      }
+      
+      // Forward to event handler
+      HandleEvent("update", changes);
+      return;
+   }
+   
+   if(packetType == "symbol_error") {
+      string errorMsg = data[2].ToStr();
+      HandleError(StringFormat("Symbol error (%s): %s", data[1].ToStr(), errorMsg));
+      return;
+   }
+   
+   if(packetType == "series_error") {
+      HandleError("Series error: " + data[3].ToStr());
+      return;
+   }
+   
+   if(packetType == "critical_error") {
+      HandleError(StringFormat("Critical error: %s - %s", data[1].ToStr(), data[2].ToStr()));
+      return;
+   }
+   
+   // Handle replay-related packets if needed
+   // ...implementation...
 }
 
 // Set chart series implementation

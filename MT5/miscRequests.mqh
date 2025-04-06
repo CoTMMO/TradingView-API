@@ -673,6 +673,95 @@ PineIndicator* getIndicator(const string id, const string version = "last",
 }
 
 //+------------------------------------------------------------------+
+//| Helper function to extract value from HTML using pattern          |
+//+------------------------------------------------------------------+
+string ExtractValue(const string &html, const string &pattern, const string &endPattern, int startPos = 0) {
+   int pos = StringFind(html, pattern, startPos);
+   if(pos == -1) return "";
+   
+   int valueStart = pos + StringLen(pattern);
+   int valueEnd = StringFind(html, endPattern, valueStart);
+   if(valueEnd == -1) return "";
+   
+   return StringSubstr(html, valueStart, valueEnd - valueStart);
+}
+
+//+------------------------------------------------------------------+
+//| Helper function to extract numeric value from HTML                |
+//+------------------------------------------------------------------+
+double ExtractNumericValue(const string &html, const string &pattern, const string &endPattern, int startPos = 0, double defaultValue = 0) {
+   string value = ExtractValue(html, pattern, endPattern, startPos);
+   if(value == "") return defaultValue;
+   
+   return StringToDouble(value);
+}
+
+//+------------------------------------------------------------------+
+//| Get user from sessionid cookie                                    |
+//+------------------------------------------------------------------+
+bool getUser(User &user, const string session, const string signature = "", 
+            const string location = "https://www.tradingview.com/") {
+   // Prepare request
+   string url = location;
+   string headers = "Cookie: " + genAuthCookies(session, signature) + "\r\n";
+   string data = "";
+   string redirectLocation = "";
+   
+   // Make the request
+   char response[];
+   int res = WebRequest("GET", url, headers, 0, NULL, response, data, redirectLocation);
+   
+   if(res == -1) {
+      int errorCode = GetLastError();
+      Print("Error in WebRequest: ", errorCode, " - ", ErrorDescription(errorCode));
+      return false;
+   }
+   
+   // Convert response to string for parsing
+   string htmlContent = CharArrayToString(response);
+   
+   // Check for auth_token which indicates successful login
+   if(StringFind(htmlContent, "auth_token") >= 0) {
+      // Extract user information using patterns
+      user.id = (int)StringToInteger(ExtractValue(htmlContent, "\"id\":", ","));
+      user.username = ExtractValue(htmlContent, "\"username\":\"", "\"");
+      user.firstName = ExtractValue(htmlContent, "\"first_name\":\"", "\"");
+      user.lastName = ExtractValue(htmlContent, "\"last_name\":\"", "\"");
+      user.reputation = StringToDouble(ExtractValue(htmlContent, "\"reputation\":", ","));
+      user.following = (int)StringToInteger(ExtractValue(htmlContent, ",\"following\":", ","));
+      user.followers = (int)StringToInteger(ExtractValue(htmlContent, ",\"followers\":", ","));
+      
+      // Extract notification counts
+      string notificationStr = ExtractValue(htmlContent, "\"notification_count\":{\"following\":", ",\"user\":");
+      user.notificationsFollowing = (int)StringToInteger(notificationStr);
+      
+      string userNotificationStr = ExtractValue(htmlContent, "\"notification_count\":{\"following\":" + notificationStr + ",\"user\":", "}");
+      user.notificationsUser = (int)StringToInteger(userNotificationStr);
+      
+      // Set session information
+      user.session = session;
+      user.signature = signature;
+      user.sessionHash = ExtractValue(htmlContent, "\"session_hash\":\"", "\"");
+      user.privateChannel = ExtractValue(htmlContent, "\"private_channel\":\"", "\"");
+      user.authToken = ExtractValue(htmlContent, "\"auth_token\":\"", "\"");
+      
+      // Convert join date
+      string dateJoined = ExtractValue(htmlContent, "\"date_joined\":\"", "\"");
+      user.joinDate = StringToTime(dateJoined);
+      
+      return true;
+   }
+   
+   // Handle redirect
+   if(redirectLocation != "" && redirectLocation != location) {
+      return getUser(user, session, signature, redirectLocation);
+   }
+   
+   Print("Wrong or expired sessionid/signature");
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Login user                                                       |
 //+------------------------------------------------------------------+
 bool loginUser(User &user, const string username, const string password, 
@@ -724,7 +813,7 @@ bool loginUser(User &user, const string username, const string password,
    for(int i = 0; i < ArraySize(cookieParts); i++) {
       if(StringFind(cookieParts[i], "sessionid=") >= 0) {
          string sessionParts[];
-         StringSplit(cookieParts[i], ';', sessionParts);
+         StringSplit(sessionParts[i], ';', sessionParts);
          session = StringSubstr(sessionParts[0], StringFind(sessionParts[0], "=") + 1);
       }
       

@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//|                                                        utils.mqh |
-//|                                                                  |
-//|                                                                  |
+//| Utility functions for the TradingView API                        |
 //+------------------------------------------------------------------+
+class Utils {
+public:
 
 /**
  * Generates a session id
@@ -33,3 +33,7 @@ string genAuthCookies(string sessionId="", string signature="") {
    if(signature == "") return "sessionid=" + sessionId;
    return "sessionid=" + sessionId + ";sessionid_sign=" + signature;
 }
+
+};
+//+------------------------------------------------------------------+
+//| End of Utils class                                              |
