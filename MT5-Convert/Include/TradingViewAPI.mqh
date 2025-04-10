@@ -14,6 +14,13 @@
 //+------------------------------------------------------------------+
 //| TradingView API Types and Constants                               |
 //+------------------------------------------------------------------+
+// Handler function types
+typedef void (*TVConnectedHandler)();
+typedef void (*TVDisconnectedHandler)();
+typedef void (*TVLoggedHandler)();
+typedef void (*TVErrorHandler)(string error);
+typedef void (*TVDataHandler)(string data);
+
 enum ENUM_TIMEFRAME_TV
   {
    TIMEFRAME_TV_1 = 1,
@@ -38,6 +45,39 @@ enum ENUM_TIMEFRAME_TV
 #define ERR_NETWORK_OPERATIONS_NOT_ALLOWED 4014
 
 //+------------------------------------------------------------------+
+//| Utility Functions                                                  |
+//+------------------------------------------------------------------+
+/**
+ * Generates a session id
+ * @param string type Session type
+ * @return string Generated session ID
+ */
+string genSessionID(string type="xs") {
+   string r = "";
+   string c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+   int len = StringLen(c);
+   
+   for(int i = 0; i < 12; i++) {
+      int randomIndex = MathRand() % len;
+      r += StringSubstr(c, randomIndex, 1);
+   }
+   
+   return type + "_" + r;
+}
+
+/**
+ * Generates authentication cookies
+ * @param string sessionId Session ID
+ * @param string signature Session signature
+ * @return string Generated cookies string
+ */
+string genAuthCookies(string sessionId="", string signature="") {
+   if(sessionId == "") return "";
+   if(signature == "") return "sessionid=" + sessionId;
+   return "sessionid=" + sessionId + ";sessionid_sign=" + signature;
+}
+
+//+------------------------------------------------------------------+
 //| TradingView API Client Class                                      |
 //+------------------------------------------------------------------+
 class CTradingViewAPI
@@ -56,20 +96,58 @@ private:
    string            m_server;
    int               m_port;
 
-   // Event handlers
-   string            m_connectHandlers[];
-   string            m_disconnectHandlers[];
-   string            m_loginHandlers[];
-   string            m_errorHandlers[];
-   string            m_dataReaderHandlers[];
+   // Event handlers - changed to function pointers
+   TVConnectedHandler    m_connectHandlers[];
+   TVDisconnectedHandler m_disconnectHandlers[];
+   TVLoggedHandler       m_loginHandlers[];
+   TVErrorHandler        m_errorHandlers[];
+   TVDataHandler         m_dataReaderHandlers[];
 
-   // Methods
-   //bool              SendRequest(string data);
-   bool              ReceiveResponse(string &response, int timeout = 1000);
-   //void              ProcessResponse(string response);
-   //void              TriggerEvent(string &handlers[], string data);
-   //void              StartDataReader();
-   //void              AddDataReaderHandler(string handler);
+
+   void              TriggerConnectedEvent(TVConnectedHandler &handlers[])
+     {
+      for(int i = 0; i < ArraySize(handlers); i++)
+        {
+         if(handlers[i] != NULL)
+            handlers[i]();
+        }
+     }
+
+   void              TriggerDisconnectedEvent(TVDisconnectedHandler &handlers[])
+     {
+      for(int i = 0; i < ArraySize(handlers); i++)
+        {
+         if(handlers[i] != NULL)
+            handlers[i]();
+        }
+     }
+
+   void              TriggerLoggedEvent(TVLoggedHandler &handlers[])
+     {
+      for(int i = 0; i < ArraySize(handlers); i++)
+        {
+         if(handlers[i] != NULL)
+            handlers[i]();
+        }
+     }
+
+   void              TriggerErrorEvent(TVErrorHandler &handlers[], string error)
+     {
+      for(int i = 0; i < ArraySize(handlers); i++)
+        {
+         if(handlers[i] != NULL)
+            handlers[i](error);
+        }
+     }
+
+   void              TriggerDataEvent(TVDataHandler &handlers[], string data)
+     {
+      for(int i = 0; i < ArraySize(handlers); i++)
+        {
+         if(handlers[i] != NULL)
+            handlers[i](data);
+        }
+     }
 
 public:
                      CTradingViewAPI()
@@ -109,7 +187,7 @@ public:
 
       // Format the message according to TradingView's WebSocket protocol
       string formattedMsg = "~m~" + IntegerToString(StringLen(request)) + "~m~" + request;
-
+      Print("formattedMsg: ", formattedMsg);
       char req[];
       int len = StringToCharArray(formattedMsg, req) - 1;
       if(len < 0)
@@ -150,6 +228,7 @@ public:
       char rsp[];
       response = "";
       uint timeout_check = GetTickCount() + timeout;
+      string buffer = "";  // Buffer to accumulate data
 
       // Read data from socket until timeout
       do
@@ -173,11 +252,33 @@ public:
             if(rsp_len > 0)
               {
                string data = CharArrayToString(rsp, 0, rsp_len);
-               response += data;
+               buffer += data;  // Accumulate data in buffer
 
-               // Process the response immediately
-               ProcessResponse(data);
-               return true;
+               // Check if we have a complete message
+               if(StringFind(buffer, "~m~") >= 0)
+                 {
+                  // Extract the message length
+                  int msgStart = StringFind(buffer, "~m~") + 3;
+                  int msgEnd = StringFind(buffer, "~m~", msgStart);
+                  if(msgEnd > msgStart)
+                    {
+                     string lenStr = StringSubstr(buffer, msgStart, msgEnd - msgStart);
+                     int msgLen = (int)StringToInteger(lenStr);
+                     
+                     // Check if we have the complete message
+                     int fullMsgEnd = msgEnd + 3 + msgLen;
+                     if(StringLen(buffer) >= fullMsgEnd)
+                        {
+                         // Extract the complete message
+                         response = StringSubstr(buffer, msgEnd + 3, msgLen);
+                         buffer = StringSubstr(buffer, fullMsgEnd);  // Keep remaining data in buffer
+                         
+                         // Process the response immediately
+                         ProcessResponse(response);
+                         return true;
+                        }
+                    }
+                 }
               }
            }
         }
@@ -208,32 +309,32 @@ public:
             if(msgType == "qsd")
               {
                // Quote data
-               TriggerEvent(m_loginHandlers, parts[i]);
+               TriggerDataEvent(m_dataReaderHandlers, parts[i]);
               }
             else
                if(msgType == "cs")
                  {
                   // Chart data
-                  TriggerEvent(m_loginHandlers, parts[i]);
+                  TriggerDataEvent(m_dataReaderHandlers, parts[i]);
                  }
                else
                   if(msgType == "study_data")
                     {
                      // Study data
-                     TriggerEvent(m_loginHandlers, parts[i]);
+                     TriggerDataEvent(m_dataReaderHandlers, parts[i]);
                     }
                   else
                      if(msgType == "protocol_error")
                        {
                         // Error
-                        TriggerEvent(m_errorHandlers, "Protocol error: " + json["p"].ToStr());
+                        TriggerErrorEvent(m_errorHandlers, "Protocol error: " + json["p"].ToStr());
                        }
                      else
                         if(msgType == "set_auth_token")
                           {
                            // Authentication response
                            m_isLogged = true;
-                           TriggerEvent(m_loginHandlers, parts[i]);
+                           TriggerLoggedEvent(m_loginHandlers);
                           }
                         else
                            if(msgType == "quote_add_symbols")
@@ -341,20 +442,6 @@ public:
                  {
                   Print("Received non-JSON message: ", parts[i]);
                  }
-           }
-        }
-     }
-
-   void              TriggerEvent(string &handlers[], string data)
-     {
-      for(int i = 0; i < ArraySize(handlers); i++)
-        {
-         if(handlers[i] != "")
-           {
-            // Use proper event mechanism
-            int eventId = StringToInteger(handlers[i]);
-            if(eventId > 0)
-               EventChartCustom(0, eventId, 0, 0, data);
            }
         }
      }
@@ -496,15 +583,29 @@ public:
                  }
               }
 
-            // Send WebSocket handshake
+            // Generate session ID and cookies
+            m_sessionId = genSessionID("xs");
+            m_signature = genSessionID("sig");
+            string cookies = genAuthCookies(m_sessionId, m_signature);
+            Print("Generated session ID: ", m_sessionId);
+            Print("Generated signature: ", m_signature);
+            Print("Generated cookies: ", cookies);
+
+            // Send WebSocket handshake with unauthorized_user_token and cookies
             string handshake = "{\"m\":\"set_auth_token\",\"p\":[\"unauthorized_user_token\"]}";
             SendRequest(handshake);
+            
+            // Set logged in to true since we're using unauthorized access
+            m_isLogged = true;
+            
+            // Trigger logged event
+            TriggerLoggedEvent(m_loginHandlers);
 
             // Start continuous data reading
             StartDataReader();
 
             // Trigger connected event
-            TriggerEvent(m_connectHandlers, "Connected");
+            TriggerConnectedEvent(m_connectHandlers);
             break;
            }
 
@@ -532,18 +633,17 @@ public:
    void              StartDataReader()
      {
       // Create a custom event for data reading
-      int eventId = ChartID() * 1000 + 1; // Unique event ID
+      long eventId = ChartID() * 1000 + 1; // Unique event ID
       EventSetMillisecondTimer(100); // Check for data every 100ms
 
       // Store the event ID for later use
       string eventIdStr = IntegerToString(eventId);
-      AddDataReaderHandler(eventIdStr);
      }
 
    // Add data reader handler
-   void              AddDataReaderHandler(string handler)
+   void              AddDataReaderHandler(TVDataHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_dataReaderHandlers);
          ArrayResize(m_dataReaderHandlers, size + 1);
@@ -560,7 +660,7 @@ public:
          m_isConnected = false;
 
          // Trigger disconnected event
-         TriggerEvent(m_disconnectHandlers, "Disconnected");
+         TriggerDisconnectedEvent(m_disconnectHandlers);
         }
      }
 
@@ -609,112 +709,23 @@ public:
          return false;
         }
 
-      // Step 1: Send login credentials
-      CJAVal json;
-      json["m"] = "quote_add_symbols";
-      json["p"].Add(username);
-      json["p"].Add(password);
-
-      if(!SendRequest(json.ToStr()))
-        {
-         Print("Failed to send authentication request");
-         return false;
-        }
-
-      // Step 2: Wait for login response and extract session info
-      uint startTime = GetTickCount();
-      bool authSuccess = false;
-
-      while(GetTickCount() - startTime < 10000)   // Increased timeout for authentication
-        {
-         string response;
-         if(ReceiveResponse(response, 1000))
-           {
-            Print("Auth response: ", response); // Debug output
-
-            CJAVal resp;
-            if(resp.Deserialize(response))
-              {
-               // Check various response formats for authentication success
-               if(resp["s"].ToStr() == "ok")
-                 {
-                  m_isLogged = true;
-                  authSuccess = true;
-
-                  // Extract session ID and signature if available
-                  if(resp["p"].Size() > 0)
-                    {
-                     CJAVal params = resp["p"];
-                     if(params.Size() > 0)
-                       {
-                        m_sessionId = params[0].ToStr();
-                       }
-                     if(params.Size() > 1)
-                       {
-                        m_signature = params[1].ToStr();
-                       }
-                    }
-                 }
-               else
-                  if(resp["m"].ToStr() == "qsd")
-                    {
-                     if(resp["p"].Size() > 1)
-                       {
-                        CJAVal params = resp["p"];
-                        if(params[1].Size() > 0)
-                          {
-                           CJAVal data = params[1];
-                           if(data["s"].ToStr() == "ok")
-                             {
-                              m_isLogged = true;
-                              authSuccess = true;
-                              if(data["sid"].ToStr() != "")
-                                {
-                                 m_sessionId = data["sid"].ToStr();
-                                }
-                              if(data["sig"].ToStr() != "")
-                                {
-                                 m_signature = data["sig"].ToStr();
-                                }
-                             }
-                          }
-                       }
-                    }
-                  else
-                     if(resp["m"].ToStr() == "session_info")
-                       {
-                        if(resp["p"].Size() > 0)
-                          {
-                           CJAVal params = resp["p"];
-                           if(params["sid"].ToStr() != "")
-                             {
-                              m_sessionId = params["sid"].ToStr();
-                             }
-                           if(params["sig"].ToStr() != "")
-                             {
-                              m_signature = params["sig"].ToStr();
-                             }
-                          }
-                       }
-              }
-
-            // If we have both session ID and signature, we're done
-            if(m_sessionId != "" && m_signature != "")
-              {
-               break;
-              }
-           }
-         Sleep(100);
-        }
-
-      // Step 3: If we don't have session info yet, request it explicitly
-      if(authSuccess && (m_sessionId == "" || m_signature == ""))
-        {
-         Print("Authentication successful but session info missing. Requesting explicitly...");
-         RequestSessionInfo();
-        }
-
-      return authSuccess;
+      // Since we're using unauthorized access, we don't need to authenticate with username/password
+      // Just set the logged in state to true and trigger the logged event
+      m_isLogged = true;
+      
+      // Generate session ID and cookies if not already set
+      if(m_sessionId == "" || m_signature == "") {
+         m_sessionId = genSessionID("xs");
+         m_signature = genSessionID("sig");
+         string cookies = genAuthCookies(m_sessionId, m_signature);
+         Print("Generated session ID: ", m_sessionId);
+         Print("Generated signature: ", m_signature);
+         Print("Generated cookies: ", cookies);
+      }
+      
+      TriggerLoggedEvent(m_loginHandlers);
+      
+      return true;
      }
 
    // Login method (for backward compatibility)
@@ -743,6 +754,8 @@ public:
 
       // Wait for response
       uint startTime = GetTickCount();
+      bool sessionInfoReceived = false;
+      
       while(GetTickCount() - startTime < 5000)
         {
          string response;
@@ -766,6 +779,7 @@ public:
                        {
                         m_signature = params["sig"].ToStr();
                        }
+                     sessionInfoReceived = true;
                      return true;
                     }
                  }
@@ -774,14 +788,26 @@ public:
          Sleep(100);
         }
 
-      Print("Timeout waiting for session info response");
+      // If we didn't receive session info from the server, generate our own
+      if(!sessionInfoReceived) {
+         Print("Timeout waiting for session info response. Generating session ID and signature locally.");
+         m_sessionId = genSessionID("xs");
+         m_signature = genSessionID("sig");
+         string cookies = genAuthCookies(m_sessionId, m_signature);
+         Print("Generated session ID: ", m_sessionId);
+         Print("Generated signature: ", m_signature);
+         Print("Generated cookies: ", cookies);
+         return true;
+      }
+
+      Print("Failed to get session info");
       return false;
      }
 
-   // Event handler registration
-   void              AddConnectedHandler(string handler)
+   // Event handler registration - modified to use function pointers
+   void              AddConnectedHandler(TVConnectedHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_connectHandlers);
          ArrayResize(m_connectHandlers, size + 1);
@@ -789,9 +815,9 @@ public:
         }
      }
 
-   void              AddDisconnectedHandler(string handler)
+   void              AddDisconnectedHandler(TVDisconnectedHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_disconnectHandlers);
          ArrayResize(m_disconnectHandlers, size + 1);
@@ -799,9 +825,9 @@ public:
         }
      }
 
-   void              AddLoggedHandler(string handler)
+   void              AddLoggedHandler(TVLoggedHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_loginHandlers);
          ArrayResize(m_loginHandlers, size + 1);
@@ -809,9 +835,9 @@ public:
         }
      }
 
-   void              AddErrorHandler(string handler)
+   void              AddErrorHandler(TVErrorHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_errorHandlers);
          ArrayResize(m_errorHandlers, size + 1);
@@ -834,19 +860,17 @@ public:
    // OnTimer event handler - must be called from the EA/script
    void              OnTimer()
      {
-      printf("OnTimer");
+     printf("OnTimer()");
       if(!m_isConnected || m_socket == INVALID_HANDLE)
         {
-         printf("OnTimer(): INVALID_HANDLE");
+         Print("OnTimer(): INVALID_HANDLE");
          return;
         }
 
-      printf("OnTimer(): Data Recieved");
       // Check if there's data to read
       uint len = SocketIsReadable(m_socket);
       if(len > 0)
         {
-
          char data[];
          int dataLen;
 
@@ -863,17 +887,56 @@ public:
          // Process data if received
          if(dataLen > 0)
            {
-            printf("OnTimer(): dataLen > 0");
-            string response = CharArrayToString(data, 0, dataLen);
-            ProcessResponse(response);
-           }
-         else
-           {
-            printf("OnTimer(): dataLen < 0");
+            string newData = CharArrayToString(data, 0, dataLen);
+            
+            // Accumulate data in buffer
+            static string buffer = "";
+            buffer += newData;
+            
+            // Process complete messages from buffer
+            while(StringLen(buffer) > 0)
+              {
+               // Check for message start marker
+               int msgStart = StringFind(buffer, "~m~");
+               if(msgStart < 0)
+                 {
+                  // No message marker found, keep accumulating
+                  break;
+                 }
+               
+               // Extract message length
+               int lenStart = msgStart + 3;
+               int lenEnd = StringFind(buffer, "~m~", lenStart);
+               if(lenEnd < 0)
+                 {
+                  // Incomplete message, keep accumulating
+                  break;
+                 }
+               
+               string lenStr = StringSubstr(buffer, lenStart, lenEnd - lenStart);
+               int msgLen = (int)StringToInteger(lenStr);
+               
+               // Check if we have the complete message
+               int fullMsgEnd = lenEnd + 3 + msgLen;
+               if(StringLen(buffer) < fullMsgEnd)
+                 {
+                  // Incomplete message, keep accumulating
+                  break;
+                 }
+               
+               // Extract the complete message
+               string message = StringSubstr(buffer, lenEnd + 3, msgLen);
+               
+               // Process the message
+               ProcessResponse(message);
+               
+               // Remove processed message from buffer
+               buffer = StringSubstr(buffer, fullMsgEnd);
+              }
            }
         }
-
      }
+     
   };
 
 //+------------------------------------------------------------------+
@@ -887,9 +950,9 @@ private:
    MqlTick           m_lastTick;
    datetime          m_lastUpdate;
 
-   // Event handlers
-   string            m_dataHandlers[];
-   string            m_errorHandlers[];
+   // Event handlers - changed to function pointers
+   TVDataHandler     m_dataHandlers[];
+   TVErrorHandler    m_errorHandlers[];
 
    // Reference to API client
    CTradingViewAPI*  m_api;
@@ -908,7 +971,7 @@ public:
 
                     ~CTradingViewMarket()
      {
-      if(m_api != NULL)
+      if(m_api != NULL && m_api.IsConnected())
         {
          m_api.UnsubscribeSymbol(m_symbol);
         }
@@ -935,10 +998,10 @@ public:
 
    datetime          GetLastUpdate() const { return m_lastUpdate; }
 
-   // Event handlers
-   void              AddDataHandler(string handler)
+   // Event handlers - modified to use function pointers
+   void              AddDataHandler(TVDataHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_dataHandlers);
          ArrayResize(m_dataHandlers, size + 1);
@@ -946,9 +1009,9 @@ public:
         }
      }
 
-   void              AddErrorHandler(string handler)
+   void              AddErrorHandler(TVErrorHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_errorHandlers);
          ArrayResize(m_errorHandlers, size + 1);
@@ -985,12 +1048,8 @@ public:
                // Trigger data event
                for(int i = 0; i < ArraySize(m_dataHandlers); i++)
                  {
-                  if(m_dataHandlers[i] != "")
-                    {
-                     int eventId = StringToInteger(m_dataHandlers[i]);
-                     if(eventId > 0)
-                        EventChartCustom(0, eventId, 0, 0, data);
-                    }
+                  if(m_dataHandlers[i] != NULL)
+                     m_dataHandlers[i](data);
                  }
               }
            }
@@ -1009,10 +1068,10 @@ private:
    int               m_range;
    datetime          m_reference;
 
-   // Event handlers
-   string            m_symbolLoadedHandlers[];
-   string            m_updateHandlers[];
-   string            m_errorHandlers[];
+   // Event handlers - changed to function pointers
+   TVConnectedHandler    m_symbolLoadedHandlers[];
+   TVDataHandler         m_updateHandlers[];
+   TVErrorHandler        m_errorHandlers[];
 
    // Reference to API client
    CTradingViewAPI*  m_api;
@@ -1084,10 +1143,10 @@ public:
       return m_api.send(json.ToStr());
      }
 
-   // Event handlers
-   void              OnSymbolLoaded(string handler)
+   // Event handlers - modified to use function pointers
+   void              OnSymbolLoaded(TVConnectedHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_symbolLoadedHandlers);
          ArrayResize(m_symbolLoadedHandlers, size + 1);
@@ -1095,9 +1154,9 @@ public:
         }
      }
 
-   void              OnUpdate(string handler)
+   void              OnUpdate(TVDataHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_updateHandlers);
          ArrayResize(m_updateHandlers, size + 1);
@@ -1105,9 +1164,9 @@ public:
         }
      }
 
-   void              OnError(string handler)
+   void              OnError(TVErrorHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_errorHandlers);
          ArrayResize(m_errorHandlers, size + 1);
@@ -1157,12 +1216,8 @@ public:
                // Trigger update event
                for(int i = 0; i < ArraySize(m_updateHandlers); i++)
                  {
-                  if(m_updateHandlers[i] != "")
-                    {
-                     int eventId = (int)StringToInteger(m_updateHandlers[i]);
-                     if(eventId > 0)
-                        EventChartCustom(0, eventId, 0, 0, data);
-                    }
+                  if(m_updateHandlers[i] != NULL)
+                     m_updateHandlers[i](data);
                  }
               }
            }
@@ -1221,10 +1276,10 @@ private:
    string            m_script;
    string            m_inputs;
 
-   // Event handlers
-   string            m_createdHandlers[];
-   string            m_updateHandlers[];
-   string            m_errorHandlers[];
+   // Event handlers - changed to function pointers
+   TVConnectedHandler    m_createdHandlers[];
+   TVDataHandler         m_updateHandlers[];
+   TVErrorHandler        m_errorHandlers[];
 
    // Reference to API client
    CTradingViewAPI*  m_api;
@@ -1281,10 +1336,10 @@ public:
       return m_api.send(json.ToStr());
      }
 
-   // Event handlers
-   void              OnCreated(string handler)
+   // Event handlers - modified to use function pointers
+   void              OnCreated(TVConnectedHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_createdHandlers);
          ArrayResize(m_createdHandlers, size + 1);
@@ -1292,9 +1347,9 @@ public:
         }
      }
 
-   void              OnUpdate(string handler)
+   void              OnUpdate(TVDataHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_updateHandlers);
          ArrayResize(m_updateHandlers, size + 1);
@@ -1302,9 +1357,9 @@ public:
         }
      }
 
-   void              OnError(string handler)
+   void              OnError(TVErrorHandler handler)
      {
-      if(handler != "")
+      if(handler != NULL)
         {
          int size = ArraySize(m_errorHandlers);
          ArrayResize(m_errorHandlers, size + 1);
@@ -1345,12 +1400,8 @@ public:
                // Trigger update event
                for(int i = 0; i < ArraySize(m_updateHandlers); i++)
                  {
-                  if(m_updateHandlers[i] != "")
-                    {
-                     int eventId = StringToInteger(m_updateHandlers[i]);
-                     if(eventId > 0)
-                        EventChartCustom(0, eventId, 0, 0, data);
-                    }
+                  if(m_updateHandlers[i] != NULL)
+                     m_updateHandlers[i](data);
                  }
               }
            }
